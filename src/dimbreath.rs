@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -32,7 +34,10 @@ pub struct Dimbreath {
 impl Dimbreath {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            client: reqwest::Client::builder().gzip(true).build()?,
+            client: reqwest::Client::builder()
+                .gzip(true)
+                .timeout(Duration::from_secs(30))
+                .build()?,
         })
     }
 }
@@ -42,6 +47,7 @@ impl GameDataSource for Dimbreath {
         let commits = self
             .client
             .get(COMMITS_API_URL)
+            .query(&[("per_page", "1")])
             .send()
             .await
             .context("Failed to fetch commits")?
@@ -49,18 +55,32 @@ impl GameDataSource for Dimbreath {
             .await
             .context("Failed to parse commits")?;
 
-        Ok(commits[0].id.clone())
+        commits
+            .first()
+            .map(|c| c.id.clone())
+            .context("No commits found")
     }
 
     async fn get_json_file<T: DeserializeOwned>(&self, git_ref: &str, path: &str) -> Result<T> {
         let url = format!("{REPO_BASE_URL}/{git_ref}/{path}");
-        self.client
+        let response = self
+            .client
             .get(&url)
             .send()
             .await
-            .with_context(|| format!("Failed to send requte for {url}"))?
+            .with_context(|| format!("Failed to send request for {}", url))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Request to {} failed with status: {}",
+                url,
+                response.status()
+            ));
+        }
+
+        response
             .json::<T>()
             .await
-            .with_context(|| format!("Failed to parse {url}"))
+            .with_context(|| format!("Failed to parse {}", url))
     }
 }

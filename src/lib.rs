@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 
 mod dimbreath;
 mod game_data;
@@ -24,6 +24,7 @@ trait GameDataSource {
     async fn get_json_file<T: DeserializeOwned>(&self, git_ref: &str, path: &str) -> Result<T>;
 }
 
+#[inline]
 fn lookup_text(text_map: &HashMap<u32, String>, id: u32) -> Option<&String> {
     let res = text_map.get(&id);
     if res.is_none() {
@@ -32,7 +33,7 @@ fn lookup_text(text_map: &HashMap<u32, String>, id: u32) -> Option<&String> {
     res
 }
 
-const DATABASE_VERSION: u32 = 0;
+const DATABASE_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Database {
@@ -68,7 +69,9 @@ impl Database {
         let path = path.as_ref();
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let db = serde_json::from_reader(reader)?;
+        let db: Self = serde_json::from_reader(reader)?;
+        ensure!(db.version == DATABASE_VERSION, "database version mismatch");
+
         Ok(db)
     }
 }
@@ -100,10 +103,12 @@ impl AnimeGameData {
         })
     }
 
+    #[inline]
     fn db(&self) -> Result<&Database> {
         self.db.as_ref().ok_or_else(|| anyhow!("No data loaded"))
     }
 
+    #[inline]
     pub fn get_affix(&self, id: u32) -> Result<&Affix> {
         self.db()?
             .affix_map
@@ -111,6 +116,7 @@ impl AnimeGameData {
             .ok_or_else(|| anyhow!("Unable to fetch affix {id}"))
     }
 
+    #[inline]
     pub fn get_artifact(&self, id: u32) -> Result<&Artifact> {
         self.db()?
             .artifact_map
@@ -118,6 +124,7 @@ impl AnimeGameData {
             .ok_or_else(|| anyhow!("Unable to fetch artifact {id}"))
     }
 
+    #[inline]
     pub fn get_character(&self, id: u32) -> Result<&String> {
         self.db()?
             .character_map
@@ -125,6 +132,7 @@ impl AnimeGameData {
             .ok_or_else(|| anyhow!("Unable to fetch character {id}"))
     }
 
+    #[inline]
     pub fn get_material(&self, id: u32) -> Result<&String> {
         self.db()?
             .material_map
@@ -132,6 +140,7 @@ impl AnimeGameData {
             .ok_or_else(|| anyhow!("Unable to fetch material {id}"))
     }
 
+    #[inline]
     pub fn get_property(&self, id: u32) -> Result<&Property> {
         self.db()?
             .property_map
@@ -139,6 +148,7 @@ impl AnimeGameData {
             .ok_or_else(|| anyhow!("Unable to fetch property {id}"))
     }
 
+    #[inline]
     pub fn get_set(&self, id: u32) -> Result<&String> {
         self.db()?
             .set_map
@@ -146,6 +156,7 @@ impl AnimeGameData {
             .ok_or_else(|| anyhow!("Unable to fetch set {id}"))
     }
 
+    #[inline]
     pub fn get_skill_type(&self, id: u32) -> Result<&SkillType> {
         self.db()?
             .skill_type_map
@@ -153,6 +164,7 @@ impl AnimeGameData {
             .ok_or_else(|| anyhow!("Unable to fetch skill type {id}"))
     }
 
+    #[inline]
     pub fn get_weapon(&self, id: u32) -> Result<&Weapon> {
         self.db()?
             .weapon_map
@@ -160,6 +172,7 @@ impl AnimeGameData {
             .ok_or_else(|| anyhow!("Unable to fetch weapon {id}"))
     }
 
+    #[inline]
     pub fn has_data(&self) -> bool {
         self.db.is_some()
     }
@@ -227,7 +240,7 @@ impl AnimeGameData {
             .await?;
 
         Ok(data
-            .iter()
+            .into_iter()
             .filter_map(|entry| {
                 let property = entry.prop_type.parse::<Property>().ok()?;
                 let value = if property.is_percentage() {
@@ -249,8 +262,8 @@ impl AnimeGameData {
             .get_json_file(git_ref, "ExcelBinOutput/ReliquaryExcelConfigData.json")
             .await?;
 
-        let map = data
-            .iter()
+        Ok(data
+            .into_iter()
             .filter_map(|entry| {
                 let set = set_map.get(&entry.set_id)?.to_string();
                 let slot = ArtifactSlot::from_game_data_name(&entry.equip_type)?;
@@ -263,9 +276,7 @@ impl AnimeGameData {
                     },
                 ))
             })
-            .collect();
-
-        Ok(map)
+            .collect())
     }
 
     async fn fetch_character_map<Source: GameDataSource>(
@@ -278,7 +289,7 @@ impl AnimeGameData {
             .await?;
 
         Ok(data
-            .iter()
+            .into_iter()
             .filter_map(|entry| {
                 Some((
                     entry.id,
@@ -298,7 +309,7 @@ impl AnimeGameData {
             .await?;
 
         Ok(data
-            .iter()
+            .into_iter()
             .filter_map(|entry| {
                 Some((
                     entry.id,
@@ -320,7 +331,7 @@ impl AnimeGameData {
             .await?;
 
         Ok(data
-            .iter()
+            .into_iter()
             .filter_map(|entry| Some((entry.id, entry.prop_type.parse::<Property>().ok()?)))
             .collect())
     }
@@ -335,11 +346,9 @@ impl AnimeGameData {
             .await?;
 
         Ok(data
-            .iter()
+            .into_iter()
+            .filter(|entry| entry.display_type == "RELIQUARY_ITEM")
             .filter_map(|entry| {
-                if entry.display_type != "RELIQUARY_ITEM" {
-                    return None;
-                }
                 let name = lookup_text(text_map, entry.name_text_map_hash)?;
                 Some((entry.param, name.clone()))
             })
@@ -357,14 +366,17 @@ impl AnimeGameData {
             )
             .await?;
 
-        let mut type_map = HashMap::new();
-        for config in data {
-            type_map.insert(config.energy_skill, SkillType::Burst);
-            type_map.insert(config.skills[0], SkillType::Auto);
-            type_map.insert(config.skills[1], SkillType::Skill);
-        }
-
-        Ok(type_map)
+        Ok(data
+            .into_iter()
+            .flat_map(|config| {
+                let skills = config.skills;
+                [
+                    (skills[0], SkillType::Auto),
+                    (skills[1], SkillType::Skill),
+                    (config.energy_skill, SkillType::Burst),
+                ]
+            })
+            .collect())
     }
 
     async fn fetch_text_map<Source: GameDataSource>(
@@ -386,7 +398,7 @@ impl AnimeGameData {
             .await?;
 
         Ok(data
-            .iter()
+            .into_iter()
             .filter_map(|entry| {
                 let name = lookup_text(text_map, entry.name_text_map_hash)?;
                 Some((
@@ -445,9 +457,7 @@ mod tests {
                 "ExcelBinOutput/WeaponExcelConfigData.json" => {
                     include_str!("test_data/ExcelBinOutput/WeaponExcelConfigData.json")
                 }
-                "TextMap/TextMapEN.json" => {
-                    include_str!("test_data/TextMap/TextMapEN.json")
-                }
+                "TextMap/TextMapEN.json" => include_str!("test_data/TextMap/TextMapEN.json"),
                 _ => return Err(anyhow!("no test data for {path}")),
             };
 
@@ -480,7 +490,7 @@ mod tests {
         let source = TestDataSource;
         let mut data = AnimeGameData::new().unwrap();
         data.update_impl(&source).await.unwrap();
-        assert_eq!(data.get_character(10000061).unwrap(), &"Kirara".to_string());
+        assert_eq!(data.get_character(10000061).unwrap(), &"Kirara");
     }
 
     #[tokio::test]
@@ -509,7 +519,7 @@ mod tests {
         let source = TestDataSource;
         let mut data = AnimeGameData::new().unwrap();
         data.update_impl(&source).await.unwrap();
-        assert_eq!(data.get_material(100002).unwrap(), &"Sunsettia".to_string());
+        assert_eq!(data.get_material(100002).unwrap(), &"Sunsettia");
     }
 
     #[tokio::test]
